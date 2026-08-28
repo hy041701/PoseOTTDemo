@@ -1,0 +1,31 @@
+# Gradle
+.gradle/
+**/build/
+
+# Android Studio / IntelliJ
+.idea/
+*.iml
+
+# Kotlin
+.kotlin/
+
+# Local machine configuration
+local.properties
+
+# Native build
+.externalNativeBuild/
+.cxx/
+
+# Generated files
+captures/
+
+# Private workout media and scoring assets
+app/src/main/res/raw/workout_*.mp4
+app/src/main/assets/workout_*/
+
+# Operating systems
+.DS_Store
+Thumbs.db
+
+# Historical source backups
+app/src/main/java/**/*_old*.txt

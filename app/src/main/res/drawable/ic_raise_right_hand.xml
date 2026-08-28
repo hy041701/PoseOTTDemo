@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="160dp"
+    android:height="200dp"
+    android:viewportWidth="240"
+    android:viewportHeight="360">
+
+    <!-- 双腿较长，大腿只比小腿略粗，末端保持圆润。 -->
+    <path
+        android:fillColor="#7C4DFF"
+        android:pathData="M96,181C89,188 87,199 87,214L84,326C84,339 91,347 101,347C111,347 117,339 117,326L120,190C113,184 104,180 96,181Z" />
+    <path
+        android:fillColor="#7C4DFF"
+        android:pathData="M144,181C151,188 153,199 153,214L156,326C156,339 149,347 139,347C129,347 123,339 123,326L120,190C127,184 136,180 144,181Z" />
+
+    <!-- 左臂自然下垂，大臂仅比前臂略粗。 -->
+    <path
+        android:fillColor="#7C4DFF"
+        android:pathData="M91,91C80,91 73,99 70,111L61,151L55,184C53,194 58,202 66,204C74,206 81,200 82,191L86,160L98,115C101,103 99,94 91,91Z" />
+
+    <!-- 右臂从圆润肩线向右上方伸展，大臂仅比前臂略粗。 -->
+    <path
+        android:fillColor="#7C4DFF"
+        android:pathData="M143,91C135,96 134,107 140,115L149,125C155,132 165,132 171,124L185,104L211,55C216,46 213,37 205,33C197,29 189,33 184,42L159,84L151,94C149,90 146,89 143,91Z" />
+
+    <!-- 躯干短而圆润，肩部平滑，腰部只轻微收窄。 -->
+    <path
+        android:fillColor="#7C4DFF"
+        android:pathData="M100,82C89,83 82,89 80,100C78,116 82,138 86,157L90,178C92,188 100,194 110,195L130,195C140,194 148,188 150,178L154,157C158,138 162,116 160,100C158,89 151,83 140,82C128,80 112,80 100,82Z" />
+
+    <!-- 头部与肩膀之间保留少量空隙。 -->
+    <path
+        android:fillColor="#7C4DFF"
+        android:pathData="M120,17a27,27 0,1 0,0,54a27,27 0,1 0,0,-54Z" />
+</vector>

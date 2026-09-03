@@ -69,7 +69,12 @@ data class PoseScoreResult(
     //9个角度的绝对差值。
     val angleDiffs: List<Double>,
     //9个角度各自的得分。
-    val angleScores: List<Int>
+    //无效角度使用-1，避免与真实0分混淆。
+    val angleScores: List<Int>,
+    //本次实际参与评分的角度下标。
+    val validAngleIndices: List<Int> = (0 until 9).toList(),
+    //有效角度权重占全部角度权重的百分比。
+    val angleCoverageRate: Int = 100
 )
 
 data class ScoreNode(

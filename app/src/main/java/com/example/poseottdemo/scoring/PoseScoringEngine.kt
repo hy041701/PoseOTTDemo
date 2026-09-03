@@ -23,6 +23,8 @@ class PoseScoringEngine(
         private const val MIN_PRESENCE = 0.50f
         //用户姿态超过800毫秒后不能继续评分。
         private const val MAX_POSE_AGE_MS = 800L
+        //少于2个有效角度时信息不足，仍按未识别动作处理。
+        private const val MIN_VALID_ANGLE_COUNT = 2
 
     }
 
@@ -61,7 +63,12 @@ class PoseScoringEngine(
 
         for (cachedFrame in recentUserFrames) {
             val userPoints = convertUserPose(cachedFrame.frame) ?: continue
-            val userAngles = PoseAngleCalculator.calculate(points = userPoints, mirrorSwap = false, calculate2D = true) ?: continue
+            val userAngles = PoseAngleCalculator.calculatePartial(
+                points = userPoints,
+                mirrorSwap = false,
+                calculate2D = true
+            )
+            if (userAngles.count { it != null } < MIN_VALID_ANGLE_COUNT) { continue }
 
             for (standardIndex in maxStandardIndex downTo minStandardIndex) {
                 val standardFrame = config.frames[standardIndex]
@@ -79,7 +86,7 @@ class PoseScoringEngine(
                     standardAngles = standardAngles,
                     userAngles = userAngles
                 )
-                if (bestResult == null || result.score > bestResult.score) { bestResult = result }
+                if (result != null && (bestResult == null || result.score > bestResult.score)) { bestResult = result }
             }
         }
         return bestResult
@@ -91,44 +98,41 @@ class PoseScoringEngine(
         currentVideoFrame: Int,
         difficulty: Int,
         standardAngles: PoseAngles,
-        userAngles: PoseAngles
-    ): PoseScoreResult {
+        userAngles: List<Double?>
+    ): PoseScoreResult? {
         val standardList = standardAngles.toList()
-        val userList = userAngles.toList()
+        val userList = userAngles.map { it ?: Double.NaN }
 
         //根据难度得到满分角度容错。
         val angleLimit = difficultyToAngleLimit(difficulty)
-        val angleDiffs = ArrayList<Double>(9)
-        val angleScores = ArrayList<Int>(9)
+        val angleDiffs = MutableList(9) { Double.NaN }
+        val angleScores = MutableList(9) { -1 }
+        val validAngleIndices = mutableListOf<Int>()
         var weightedScore = 0.0
         var weightSum = 0.0
+        val totalWeight = config.weights.sumOf { it.coerceAtLeast(0.0) }
 
         for (index in 0 until 9) {
-            val diff = abs(standardList[index] - userList[index])
+            val userAngle = userAngles[index] ?: continue
+            val diff = abs(standardList[index] - userAngle)
             val angleScore = calculateAngleScore(angleDiff = diff, angleLimit = angleLimit)
-            val weight = config.weights[index]
-            angleDiffs.add(diff)
-            angleScores.add(angleScore)
+            val weight = config.weights[index].coerceAtLeast(0.0)
+            angleDiffs[index] = diff
+            angleScores[index] = angleScore
+            validAngleIndices.add(index)
             weightedScore += angleScore * weight
             weightSum += weight
         }
 
-        if (weightSum <= 0.0) {
-            return PoseScoreResult(
-                score = 0,
-                videoFrameId = currentVideoFrame,
-                matchedStandardFrameId = standardFrame.frameId,
-                standardAngles = standardList,
-                userAngles = userList,
-                angleDiffs = angleDiffs,
-                angleScores = angleScores
-            )
-        }
+        if (validAngleIndices.size < MIN_VALID_ANGLE_COUNT || weightSum <= 0.0 || totalWeight <= 0.0) { return null }
 
         //先得到加权百分制分数。
         var finalScore = weightedScore / weightSum
         // score = score² / 100 用于压低中间段分数。
         finalScore = finalScore * finalScore / 100.0
+        //部分身体仍可评分，但按有效权重覆盖率进行温和惩罚，避免只露出少量关节获得满分。
+        val coverage = (weightSum / totalWeight).coerceIn(0.0, 1.0)
+        finalScore *= 0.5 + 0.5 * coverage
 
         return PoseScoreResult(score = finalScore.roundToInt().coerceIn(0, 100),
             videoFrameId = currentVideoFrame,
@@ -136,7 +140,9 @@ class PoseScoringEngine(
             standardAngles = standardList,
             userAngles = userList,
             angleDiffs = angleDiffs,
-            angleScores = angleScores
+            angleScores = angleScores,
+            validAngleIndices = validAngleIndices,
+            angleCoverageRate = (coverage * 100.0).roundToInt().coerceIn(0, 100)
         )
     }
 
@@ -209,36 +215,36 @@ class PoseScoringEngine(
                 0
             )
 
-        //判断评分点必须且可信。
-        for (id in requiredIds) {
-            val point = pointsById[id] ?: return null
-            if (!point.x.isFinite() || !point.y.isFinite() || point.visibility < MIN_VISIBILITY || point.presence < MIN_PRESENCE) { return null }
-        }
+        val result = mutableMapOf<BodyPoint, Point3D>()
 
-        //将归一化坐标恢复成图像坐标。目前评分使用2D，所以Z暂时保存但不参与计算。
-        fun point(id: Int): Point3D {
-            val source = pointsById[id]!!
-            return Point3D(
+        //只保留存在且可信的评分点；缺少下半身时允许上半身角度继续参与评分。
+        for (id in requiredIds) {
+            val source = pointsById[id] ?: continue
+            if (!source.x.isFinite() || !source.y.isFinite()
+                || source.visibility < MIN_VISIBILITY
+                || source.presence < MIN_PRESENCE
+            ) { continue }
+            val bodyPoint = when (id) {
+                12 -> BodyPoint.RIGHT_SHOULDER
+                11 -> BodyPoint.LEFT_SHOULDER
+                14 -> BodyPoint.RIGHT_ELBOW
+                13 -> BodyPoint.LEFT_ELBOW
+                16 -> BodyPoint.RIGHT_WRIST
+                15 -> BodyPoint.LEFT_WRIST
+                24 -> BodyPoint.RIGHT_HIP
+                23 -> BodyPoint.LEFT_HIP
+                26 -> BodyPoint.RIGHT_KNEE
+                25 -> BodyPoint.LEFT_KNEE
+                28 -> BodyPoint.RIGHT_ANKLE
+                27 -> BodyPoint.LEFT_ANKLE
+                else -> BodyPoint.NOSE
+            }
+            result[bodyPoint] = Point3D(
                 x = source.x.toDouble() * frame.imageWidth,
                 y = source.y.toDouble() * frame.imageHeight,
                 z = source.z.toDouble() * frame.imageWidth
             )
         }
-
-        return mapOf(
-            BodyPoint.RIGHT_SHOULDER to point(12),
-            BodyPoint.LEFT_SHOULDER to point(11),
-            BodyPoint.RIGHT_ELBOW to point(14),
-            BodyPoint.LEFT_ELBOW to point(13),
-            BodyPoint.RIGHT_WRIST to point(16),
-            BodyPoint.LEFT_WRIST to point(15),
-            BodyPoint.RIGHT_HIP to point(24),
-            BodyPoint.LEFT_HIP to point(23),
-            BodyPoint.RIGHT_KNEE to point(26),
-            BodyPoint.LEFT_KNEE to point(25),
-            BodyPoint.RIGHT_ANKLE to point(28),
-            BodyPoint.LEFT_ANKLE to point(27),
-            BodyPoint.NOSE to point(0)
-        )
+        return result.takeIf { it.isNotEmpty() }
     }
 }

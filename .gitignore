@@ -29,3 +29,22 @@ Thumbs.db
 
 # Historical source backups
 app/src/main/java/**/*_old*.txt
+
+# Local reports, notes and experiment backups
+.codex-backups/
+backups/
+交付文档/
+docs/
+*.doc
+*.docx
+*.pdf
+*.md
+!README.md
+!LICENSE.md
+*.bak
+app/src/main/java/**/*_before_*.txt
+
+# Generated application packages
+*.apk
+*.aab
+*.aar

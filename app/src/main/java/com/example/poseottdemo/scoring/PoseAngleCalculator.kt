@@ -16,53 +16,90 @@ object PoseAngleCalculator {
         calculate2D: Boolean
     ): PoseAngles? {
 
-        val rightShoulder = points[BodyPoint.RIGHT_SHOULDER] ?: return null
-        val leftShoulder = points[BodyPoint.LEFT_SHOULDER] ?: return null
-        val rightElbow = points[BodyPoint.RIGHT_ELBOW] ?: return null
-        val leftElbow = points[BodyPoint.LEFT_ELBOW] ?: return null
-        val rightWrist = points[BodyPoint.RIGHT_WRIST] ?: return null
-        val leftWrist = points[BodyPoint.LEFT_WRIST] ?: return null
-        val rightHip = points[BodyPoint.RIGHT_HIP] ?: return null
-        val leftHip = points[BodyPoint.LEFT_HIP] ?: return null
-        val rightKnee = points[BodyPoint.RIGHT_KNEE] ?: return null
-        val leftKnee = points[BodyPoint.LEFT_KNEE] ?: return null
-        val rightAnkle = points[BodyPoint.RIGHT_ANKLE] ?: return null
-        val leftAnkle = points[BodyPoint.LEFT_ANKLE] ?: return null
-        val nose = points[BodyPoint.NOSE] ?: return null
+        val values = calculatePartial(
+            points = points,
+            mirrorSwap = mirrorSwap,
+            calculate2D = calculate2D
+        )
+        if (values.any { it == null }) { return null }
+        return PoseAngles(
+            theta1 = values[0]!!,
+            theta2 = values[1]!!,
+            theta3 = values[2]!!,
+            theta4 = values[3]!!,
+            theta5 = values[4]!!,
+            theta6 = values[5]!!,
+            theta7 = values[6]!!,
+            theta8 = values[7]!!,
+            theta9 = values[8]!!
+        )
+    }
+
+    //按当前可用关键点分别计算角度。缺少下半身时仍可保留肩、肘等上半身角度。
+    fun calculatePartial(
+        points: Map<BodyPoint, Point3D>,
+        mirrorSwap: Boolean,
+        calculate2D: Boolean
+    ): List<Double?> {
+
+        val rightShoulder = points[BodyPoint.RIGHT_SHOULDER]
+        val leftShoulder = points[BodyPoint.LEFT_SHOULDER]
+        val rightElbow = points[BodyPoint.RIGHT_ELBOW]
+        val leftElbow = points[BodyPoint.LEFT_ELBOW]
+        val rightWrist = points[BodyPoint.RIGHT_WRIST]
+        val leftWrist = points[BodyPoint.LEFT_WRIST]
+        val rightHip = points[BodyPoint.RIGHT_HIP]
+        val leftHip = points[BodyPoint.LEFT_HIP]
+        val rightKnee = points[BodyPoint.RIGHT_KNEE]
+        val leftKnee = points[BodyPoint.LEFT_KNEE]
+        val rightAnkle = points[BodyPoint.RIGHT_ANKLE]
+        val leftAnkle = points[BodyPoint.LEFT_ANKLE]
+        val nose = points[BodyPoint.NOSE]
+
+        fun angleOrNull(a: Point3D?, center: Point3D?, b: Point3D?): Double? {
+            if (a == null || center == null || b == null) { return null }
+            return angle(a = a, center = center, b = b, calculate2D = calculate2D)
+        }
 
         //1. 左肘—左肩—左髋
-        var leftShoulderAngle = angle(a = leftElbow, center = leftShoulder, b = leftHip, calculate2D = calculate2D)
+        var leftShoulderAngle = angleOrNull(a = leftElbow, center = leftShoulder, b = leftHip)
 
         //2. 右肘—右肩—右髋
-        var rightShoulderAngle = angle(a = rightElbow, center = rightShoulder, b = rightHip, calculate2D = calculate2D)
+        var rightShoulderAngle = angleOrNull(a = rightElbow, center = rightShoulder, b = rightHip)
 
         //3. 左腕—左肘—左肩
-        var leftElbowAngle = angle(a = leftWrist, center = leftElbow, b = leftShoulder, calculate2D = calculate2D)
+        var leftElbowAngle = angleOrNull(a = leftWrist, center = leftElbow, b = leftShoulder)
 
         //4. 右腕—右肘—右肩
-        var rightElbowAngle = angle(a = rightWrist, center = rightElbow, b = rightShoulder, calculate2D = calculate2D)
+        var rightElbowAngle = angleOrNull(a = rightWrist, center = rightElbow, b = rightShoulder)
 
         //5. 左肩—左髋—左膝
-        var leftHipAngle = angle(a = leftShoulder, center = leftHip, b = leftKnee, calculate2D = calculate2D)
+        var leftHipAngle = angleOrNull(a = leftShoulder, center = leftHip, b = leftKnee)
 
         //6. 右肩—右髋—右膝
-        var rightHipAngle = angle(a = rightShoulder, center = rightHip, b = rightKnee, calculate2D = calculate2D)
+        var rightHipAngle = angleOrNull(a = rightShoulder, center = rightHip, b = rightKnee)
 
         //7. 左髋—左膝—左踝
-        var leftKneeAngle = angle(a = leftHip, center = leftKnee, b = leftAnkle, calculate2D = calculate2D)
+        var leftKneeAngle = angleOrNull(a = leftHip, center = leftKnee, b = leftAnkle)
 
         //8. 右髋—右膝—右踝
-        var rightKneeAngle = angle(a = rightHip, center = rightKnee, b = rightAnkle, calculate2D = calculate2D)
+        var rightKneeAngle = angleOrNull(a = rightHip, center = rightKnee, b = rightAnkle)
 
         //计算双肩中点。
-        val middleShoulder = Point3D(
+        val middleShoulder = if (leftShoulder != null && rightShoulder != null) {
+            Point3D(
                 x = (leftShoulder.x + rightShoulder.x) / 2.0,
                 y = (leftShoulder.y + rightShoulder.y) / 2.0,
                 z = (leftShoulder.z + rightShoulder.z) / 2.0
             )
+        } else { null }
 
         //9. 鼻子—双肩中点—右肩。
-        val noseAngle = angle(a = nose, center = middleShoulder, b = if (mirrorSwap) { leftShoulder } else { rightShoulder }, calculate2D = calculate2D)
+        val noseAngle = angleOrNull(
+            a = nose,
+            center = middleShoulder,
+            b = if (mirrorSwap) { leftShoulder } else { rightShoulder }
+        )
 
         //交换标准动作左右角度。
         if (mirrorSwap) {
@@ -83,16 +120,16 @@ object PoseAngleCalculator {
             rightKneeAngle = kneeTemp
         }
 
-        return PoseAngles(
-            theta1 = leftShoulderAngle,
-            theta2 = rightShoulderAngle,
-            theta3 = leftElbowAngle,
-            theta4 = rightElbowAngle,
-            theta5 = leftHipAngle,
-            theta6 = rightHipAngle,
-            theta7 = leftKneeAngle,
-            theta8 = rightKneeAngle,
-            theta9 = noseAngle
+        return listOf(
+            leftShoulderAngle,
+            rightShoulderAngle,
+            leftElbowAngle,
+            rightElbowAngle,
+            leftHipAngle,
+            rightHipAngle,
+            leftKneeAngle,
+            rightKneeAngle,
+            noseAngle
         )
     }
 

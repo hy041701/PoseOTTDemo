@@ -183,8 +183,8 @@
                 <!-- 火柴人 -->
                 <FrameLayout
                     android:id="@+id/skeletonContainer"
-                    android:layout_width="104dp"
-                    android:layout_height="184dp"
+                    android:layout_width="124dp"
+                    android:layout_height="200dp"
                     android:layout_gravity="bottom|end"
                     android:layout_marginEnd="20dp"
                     android:layout_marginBottom="88dp"
@@ -197,6 +197,23 @@
                         android:id="@+id/skeletonView"
                         android:layout_width="match_parent"
                         android:layout_height="match_parent" />
+
+                    <!-- 评分节点出现的关节纠错提示，不改变火柴人面板尺寸。 -->
+                    <TextView
+                        android:id="@+id/tvJointCorrection"
+                        android:layout_width="112dp"
+                        android:layout_height="wrap_content"
+                        android:layout_gravity="top|center_horizontal"
+                        android:layout_marginTop="7dp"
+                        android:background="@drawable/joint_correction_badge_background"
+                        android:elevation="3dp"
+                        android:ellipsize="end"
+                        android:fontFamily="sans-serif-medium"
+                        android:gravity="center"
+                        android:maxLines="2"
+                        android:textColor="#554F61"
+                        android:textSize="12sp"
+                        android:visibility="gone" />
                 </FrameLayout>
 
                 <!-- 自定义课程进度 -->
@@ -770,14 +787,38 @@
                             </LinearLayout>
                         </LinearLayout>
 
-                        <TextView
-                            android:layout_width="wrap_content"
-                            android:layout_height="wrap_content"
+                        <LinearLayout
+                            android:layout_width="match_parent"
+                            android:layout_height="60dp"
                             android:layout_marginTop="30dp"
-                            android:fontFamily="sans-serif-medium"
-                            android:text="按返回键选择其他课程"
-                            android:textColor="#6E43D8"
-                            android:textSize="16sp" />
+                            android:gravity="center"
+                            android:orientation="horizontal">
+
+                            <Button
+                                android:id="@+id/btnFinalBack"
+                                android:layout_width="0dp"
+                                android:layout_height="60dp"
+                                android:layout_weight="1"
+                                android:backgroundTint="@color/tv_secondary_button_tint"
+                                android:focusable="true"
+                                android:fontFamily="sans-serif-medium"
+                                android:text="返回"
+                                android:textColor="@color/tv_button_text_tint"
+                                android:textSize="18sp" />
+
+                            <Button
+                                android:id="@+id/btnFinalAdjacent"
+                                android:layout_width="0dp"
+                                android:layout_height="60dp"
+                                android:layout_marginStart="16dp"
+                                android:layout_weight="1"
+                                android:backgroundTint="@color/tv_secondary_button_tint"
+                                android:focusable="true"
+                                android:fontFamily="sans-serif-medium"
+                                android:text="下一个"
+                                android:textColor="@color/tv_button_text_tint"
+                                android:textSize="18sp" />
+                        </LinearLayout>
                     </LinearLayout>
 
                 </FrameLayout>

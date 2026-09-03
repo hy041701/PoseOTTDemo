@@ -2,10 +2,13 @@ package com.example.poseottdemo.scoring
 
 import android.content.Context
 import android.util.Log
-import java.util.zip.ZipInputStream
 
 object PoseConfigLoader {
     private const val TAG = "PoseScore"
+    // 原始标准图片每个完整压缩包固定包含120帧。
+    private const val FRAMES_PER_SEGMENT = 120
+    // config中的分包编号固定从1开始。
+    private const val SEGMENT_NUMBER_BASE = 1
     fun load(
         context: Context,
         assetDirectory: String
@@ -13,41 +16,29 @@ object PoseConfigLoader {
 
         val assetFileName = "$assetDirectory/config.txt"
         val lines = context.assets.open(assetFileName).bufferedReader().use { it.readLines() }
-
         require(lines.size >= 4) { "config.txt内容不足" }
 
         val firstLine = lines[0].split(",").filter { it.isNotBlank() }
-
         val frameCount = firstLine.first().trim().toInt()
+        require(frameCount > 0) { "config总帧数必须大于0" }
 
-        val segmentFrameCounts = readSegmentFrameCounts(context, assetDirectory)
-        require(segmentFrameCounts.sum() == frameCount) {
-            "config总帧数为$frameCount，ZIP中实际读取到${segmentFrameCounts.sum()}张图片"
-        }
-        val scoreNodes = parseScoreNodes(tokens = firstLine.drop(1), segmentFrameCounts = segmentFrameCounts)
+        // 根据每段固定120帧直接计算评分节点，不再读取ZIP。
+        val scoreNodes = parseScoreNodes(tokens = firstLine.drop(1), frameCount = frameCount)
 
         val restSeconds = lines[1].split(",").first { it.isNotBlank() }.trim().toInt()
-
         val weights = lines[2].split(",").filter { it.isNotBlank() }.map { it.trim().toDouble() }
-
         require(weights.size == 9) { "评分权重必须为9个" }
-
         val frames = mutableListOf<StandardPoseFrame>()
-
         lines.drop(3).forEach { line ->
             if (line.isBlank()) { return@forEach }
-
             val values = line.split(",").filter { it.isNotBlank() }
-
             if (values.size < 40) {
                 Log.w(TAG, "跳过异常标准帧")
                 return@forEach
             }
 
             val frameId = values[0].toInt()
-
             val numbers = values.drop(1).take(39).map { it.toDouble() }
-
             fun point(index: Int): Point3D {
                 val start = index * 3
                 return Point3D(x = numbers[start], y = numbers[start + 1], z = numbers[start + 2])
@@ -73,7 +64,14 @@ object PoseConfigLoader {
         }
         require(frames.isNotEmpty()) { "没有读取到标准姿态帧" }
 
+        require(frames.size == frameCount) { "config声明总帧数为$frameCount，" + "实际读取到${frames.size}帧标准姿态" }
+
         val sortedFrames = frames.sortedBy { it.frameId }
+
+        sortedFrames.forEachIndexed { index, frame ->
+            val expectedFrameId = index + 1
+            require(frame.frameId == expectedFrameId) { "标准姿态帧号不连续：" + "期望$expectedFrameId，" + "实际${frame.frameId}" }
+        }
         return WorkoutScoreConfig(
             frameCount = frameCount,
             restSeconds = restSeconds,
@@ -83,88 +81,77 @@ object PoseConfigLoader {
         )
     }
 
-    //按ZIP名称顺序读取每个压缩包中的标准图片数量。
-    private fun readSegmentFrameCounts(
-        context: Context,
-        assetDirectory: String
-    ): List<Int> {
-        val zipFiles = context.assets.list(assetDirectory)
-            ?.filter { it.endsWith(".zip", ignoreCase = true) }
-            ?.sortedWith(compareBy<String>({ fileNumber(it) }, { it }))
-            .orEmpty()
-
-        require(zipFiles.isNotEmpty()) { "$assetDirectory 中没有找到标准动作ZIP" }
-
-        return zipFiles.map { zipFile ->
-            val zipPath = "$assetDirectory/$zipFile"
-            var imageCount = 0
-
-            ZipInputStream(context.assets.open(zipPath).buffered()).use { input ->
-                var entry = input.nextEntry
-                while (entry != null) {
-                    if (!entry.isDirectory && isImageFile(entry.name)) {
-                        imageCount++
-                    }
-                    input.closeEntry()
-                    entry = input.nextEntry
-                }
-            }
-            require(imageCount > 0) { "$zipPath 中没有标准动作图片" }
-            imageCount
-        }
-    }
-
-    //提取ZIP文件名中的数字，用于按素材序号排序。
-    private fun fileNumber(fileName: String): Int {
-        return Regex("\\d+").find(fileName)?.value?.toIntOrNull() ?: Int.MAX_VALUE
-    }
-
-    //判断ZIP条目是否为标准动作图片。
-    private fun isImageFile(fileName: String): Boolean {
-        val lowerName = fileName.lowercase()
-        return lowerName.endsWith(".jpg") ||
-                lowerName.endsWith(".jpeg") ||
-                lowerName.endsWith(".png")
-    }
-
+    /**
+     * 将“分段编号 + 分段内帧号”转换为视频全局帧号。
+     * 当前config格式：#分段编号#分段内帧号#难度
+     * 例如：#1#0#75 表示第1段第0帧，难度75。
+     */
     private fun parseScoreNodes(
         tokens: List<String>,
-        segmentFrameCounts: List<Int>
+        frameCount: Int
     ): List<ScoreNode> {
         val result = mutableListOf<ScoreNode>()
+
+        // 没有单独配置难度时沿用前一个难度。
         var currentDifficulty = 60
-        val parsedTokens = tokens.mapNotNull { token ->
-            val parts = token.split("#").filter { it.isNotBlank() }
-            if (parts.size < 2) null else parts
-        }
-        val zipNumberBase = if (parsedTokens.any { it[0].toIntOrNull() == 0 }) 0 else 1
+
+        val parsedTokens =
+            tokens.mapNotNull { token ->
+                val parts = token.split("#").filter { it.isNotBlank() }
+
+                if (parts.size < 2) {
+                    null
+                } else {
+                    parts
+                }
+            }
 
         parsedTokens.forEach { parts ->
-            val zipNumber = parts[0].toIntOrNull() ?: return@forEach
-
+            val segmentNumber = parts[0].toIntOrNull() ?: return@forEach
             val localFrame = parts[1].toIntOrNull() ?: return@forEach
 
             if (parts.size >= 3) {
                 currentDifficulty = parts[2].toIntOrNull()?.coerceIn(0, 100) ?: currentDifficulty
             }
 
-            val segmentIndex = zipNumber - zipNumberBase
+            val segmentIndex = segmentNumber - SEGMENT_NUMBER_BASE
 
-            if (segmentIndex !in segmentFrameCounts.indices) { return@forEach }
+            if (segmentIndex < 0) {
+                Log.w(TAG, "跳过无效分段编号：$segmentNumber")
+                return@forEach
+            }
 
-            val segmentFrameCount = segmentFrameCounts[segmentIndex]
+            // 当前分段在整段视频中的起始位置。
+            val segmentStartFrame = segmentIndex * FRAMES_PER_SEGMENT
 
-            if (localFrame !in 0 until segmentFrameCount) { return@forEach }
+            //最后一段可能不足120帧。例如总帧数1523：第13段开始位置为1440，实际只剩83帧。
+            val remainingFrameCount = frameCount - segmentStartFrame
+            val currentSegmentFrameCount = minOf(FRAMES_PER_SEGMENT, remainingFrameCount)
 
-            val previousFrames = segmentFrameCounts.take(segmentIndex).sum()
+            if (currentSegmentFrameCount <= 0) {
+                Log.w(TAG, "跳过超出总帧数的分段：$segmentNumber")
+                return@forEach
+            }
 
-            val globalFrameId = previousFrames + localFrame + 1
+            // 分段内帧号从0开始。
+            if (localFrame !in 0 until currentSegmentFrameCount
+            ) {
+                Log.w(TAG, "跳过无效分段帧：" + "segment=$segmentNumber，" + "localFrame=$localFrame，" + "segmentFrameCount=$currentSegmentFrameCount")
+                return@forEach
+            }
 
+            //转换成从1开始的全局帧号：第1段第0帧 -> 全局第1帧；第2段第0帧 -> 全局第121帧
+            val globalFrameId = segmentStartFrame + localFrame + 1
+
+            if (globalFrameId !in 1..frameCount) {
+                Log.w(TAG, "跳过超出范围的全局帧：$globalFrameId")
+                return@forEach
+            }
             result.add(ScoreNode(frameId = globalFrameId, difficulty = currentDifficulty)
             )
         }
-        return result.sortedBy {
-            it.frameId
-        }
+        return result.sortedBy { it.frameId }
     }
 }
+
+

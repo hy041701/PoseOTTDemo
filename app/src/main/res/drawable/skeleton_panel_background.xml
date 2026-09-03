@@ -1,6 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <shape xmlns:android="http://schemas.android.com/apk/res/android"
     android:shape="rectangle">
-    <solid android:color="#5CB7C3" />
+    <!-- 实际半透明渐变由 SkeletonView 绘制；这里保留圆角轮廓供容器裁剪。 -->
+    <solid android:color="#00000000" />
     <corners android:radius="16dp" />
 </shape>

@@ -28,6 +28,9 @@ import android.widget.Button
 import com.example.poseottdemo.scoring.PoseScoringEngine
 import com.example.poseottdemo.scoring.PoseConfigLoader
 import com.example.poseottdemo.scoring.WorkoutScoreConfig
+import com.example.poseottdemo.scoring.JointCorrection
+import com.example.poseottdemo.scoring.JointCorrectionMapper
+import com.example.poseottdemo.scoring.PoseScoreResult
 import android.os.Handler
 import android.os.Looper
 import androidx.media3.common.Player
@@ -93,6 +96,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var scorePanel: View
     private lateinit var tvCurrentScore: TextView
     private lateinit var tvScoreFeedback: TextView
+    private lateinit var tvJointCorrection: TextView
 
     //训练结束总分浮层。
     private lateinit var finalScoreOverlay: View
@@ -100,6 +104,8 @@ class MainActivity : AppCompatActivity() {
     private lateinit var tvFinalScore: TextView
     private lateinit var tvFinalAverageScore: TextView
     private lateinit var tvFinalCompletionRate: TextView
+    private lateinit var btnFinalBack: Button
+    private lateinit var btnFinalAdjacent: Button
 
     //正式训练开始前的倒计时控件。
     private lateinit var preparationOverlay: View
@@ -163,7 +169,7 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    //单次评分显示结束后隐藏评分面板。淡出变透明的效果
+    //单次评分显示结束后隐藏评分面板，淡出变透明的效果。
     private val hideScorePanelTask = Runnable {
         if (::scorePanel.isInitialized && scorePanel.visibility == View.VISIBLE) {
             scorePanel.animate().alpha(0f).scaleX(0.85f).scaleY(0.85f).setDuration(220L).withEndAction {
@@ -171,15 +177,17 @@ class MainActivity : AppCompatActivity() {
                     scorePanel.alpha = 1f
                     scorePanel.scaleX = 1f
                     scorePanel.scaleY = 1f
+                    if (::skeletonView.isInitialized) { skeletonView.clearCorrections() }
+                    hideJointCorrection()
                 }.start()
         }
     }
     private val serverPort = 8765
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         setContentView(R.layout.activity_main)//MainActivity使用activity_main.xml作为自己的界面
-
         onBackPressedDispatcher.addCallback(
             this,
             object : OnBackPressedCallback(true) {
@@ -221,6 +229,7 @@ class MainActivity : AppCompatActivity() {
         scorePanel = findViewById(R.id.scorePanel)
         tvCurrentScore = findViewById(R.id.tvCurrentScore)
         tvScoreFeedback = findViewById(R.id.tvScoreFeedback)
+        tvJointCorrection = findViewById(R.id.tvJointCorrection)
 
         //最终评分
         finalScoreOverlay = findViewById(R.id.finalScoreOverlay)
@@ -228,6 +237,8 @@ class MainActivity : AppCompatActivity() {
         tvFinalScore = findViewById(R.id.tvFinalScore)
         tvFinalAverageScore = findViewById(R.id.tvFinalAverageScore)
         tvFinalCompletionRate = findViewById(R.id.tvFinalCompletionRate)
+        btnFinalBack = findViewById(R.id.btnFinalBack)
+        btnFinalAdjacent = findViewById(R.id.btnFinalAdjacent)
 
         //自定义进度条
         playbackProgressPanel = findViewById(R.id.playbackProgressPanel)
@@ -250,6 +261,8 @@ class MainActivity : AppCompatActivity() {
         btnReconnect.setOnClickListener { reconnectPhone() }
         btnConfirmExitWorkout.setOnClickListener { confirmExitWorkout() }
         btnCancelExitWorkout.setOnClickListener { cancelExitWorkout() }
+        btnFinalBack.setOnClickListener { stopCurrentWorkoutKeepConnection() }
+        btnFinalAdjacent.setOnClickListener { startAdjacentWorkoutFromCompletion() }
 
         //Activity一启动，服务器就启动
         startPoseServer()
@@ -408,6 +421,9 @@ class MainActivity : AppCompatActivity() {
     //倒计时结束后先显示视频第一帧一秒钟。
     private fun finishPreparationCountdown() {
         isPreparingWorkout = false
+        if (playbackMode == PlaybackMode.VIDEO_WITH_POSE && isPhoneConnected) {
+            skeletonView.finishBodySizeCalibration()
+        }
         scoreHandler.removeCallbacks(preparationTask)
         preparationCountdownAnimator?.cancel()
         preparationCountdownAnimator = null
@@ -467,7 +483,13 @@ class MainActivity : AppCompatActivity() {
         stopScoreChecking()
         hideScorePanel()
         skeletonView.clearPose()
-        skeletonContainer.visibility = View.GONE
+        if (playbackMode == PlaybackMode.VIDEO_WITH_POSE && isPhoneConnected) {
+            //INVISIBLE仍参与布局测量，倒计时期间才能按真实显示区域计算50%基准。
+            skeletonView.startBodySizeCalibration()
+            skeletonContainer.visibility = View.INVISIBLE
+        } else {
+            skeletonContainer.visibility = View.GONE
+        }
         btnScanPhone.visibility = View.GONE
         preparationCount = 5
         preparationCountdownProgress.progress = 5000
@@ -538,7 +560,7 @@ class MainActivity : AppCompatActivity() {
             validWorkoutScores.add(result.score)
             nextScoreNodeIndex++
             scoreNodeWaitStartedAtMs = null
-            showScoreResult(score = result.score)
+            showScoreResult(result)
             return
         }
 
@@ -555,12 +577,14 @@ class MainActivity : AppCompatActivity() {
         workoutScores.add(0)
         nextScoreNodeIndex++
         scoreNodeWaitStartedAtMs = null
-        showScoreResult(score = 0)
+        showMissingPoseResult()
     }
 
     //立即隐藏评分面板并取消等待中的隐藏任务。
     private fun hideScorePanel() {
         scoreHandler.removeCallbacks(hideScorePanelTask)
+        if (::skeletonView.isInitialized) { skeletonView.clearCorrections() }
+        hideJointCorrection()
         if (::scorePanel.isInitialized) {
             scorePanel.animate().cancel()
             scorePanel.visibility = View.GONE
@@ -571,18 +595,46 @@ class MainActivity : AppCompatActivity() {
     }
 
     //在评分帧后动态显示评价和分数。
-    private fun showScoreResult(
-        score: Int
+    private fun showScoreResult(result: PoseScoreResult) {
+        val corrections = JointCorrectionMapper.from(result)
+        showScorePresentation(
+            score = result.score,
+            correctionMessage = JointCorrectionMapper.coverageMessage(result)
+                ?: JointCorrectionMapper.primaryMessage(corrections, result.score),
+            corrections = corrections
+        )
+    }
+
+    private fun showMissingPoseResult() {
+        showScorePresentation(
+            score = 0,
+            correctionMessage = null,
+            corrections = emptyList()
+        )
+    }
+
+    private fun showScorePresentation(
+        score: Int,
+        correctionMessage: String?,
+        corrections: List<JointCorrection>
     ) {
         scoreHandler.removeCallbacks(hideScorePanelTask)
         scorePanel.animate().cancel()
         tvCurrentScore.text = "+$score"
+        //顶部评分面板保持原来的总分评价方式。
         tvScoreFeedback.text = when {
             score == 0 -> "未识别到动作"
-            score >= 90 -> "真棒"
-            score >= 75 -> "很好"
+            score >= 90 -> "真棒!"
+            score >= 75 -> "很好~"
             score >= 60 -> "继续加油"
             else -> "注意动作"
+        }
+        if (corrections.isEmpty()) {
+            skeletonView.clearCorrections()
+            hideJointCorrection()
+        } else {
+            skeletonView.updateCorrections(corrections)
+            showJointCorrection(correctionMessage)
         }
 
         scorePanel.alpha = 0f
@@ -594,6 +646,32 @@ class MainActivity : AppCompatActivity() {
 
         //浮字停留1.5秒后淡出。
         scoreHandler.postDelayed(hideScorePanelTask, 1500L)
+    }
+
+    //纠错文字在现有火柴人面板顶部以紧凑卡片显示，不改变面板尺寸。
+    private fun showJointCorrection(message: String?) {
+        if (!::tvJointCorrection.isInitialized || message.isNullOrBlank()) {
+            hideJointCorrection()
+            return
+        }
+        tvJointCorrection.animate().cancel()
+        tvJointCorrection.text = message
+        tvJointCorrection.alpha = 0f
+        tvJointCorrection.translationY = -6f * resources.displayMetrics.density
+        tvJointCorrection.visibility = View.VISIBLE
+        tvJointCorrection.animate()
+            .alpha(1f)
+            .translationY(0f)
+            .setDuration(180L)
+            .start()
+    }
+
+    private fun hideJointCorrection() {
+        if (!::tvJointCorrection.isInitialized) { return }
+        tvJointCorrection.animate().cancel()
+        tvJointCorrection.visibility = View.GONE
+        tvJointCorrection.alpha = 1f
+        tvJointCorrection.translationY = 0f
     }
 
     //清空当前训练的评分数据。
@@ -698,9 +776,20 @@ class MainActivity : AppCompatActivity() {
         val finalScore = (averageScore * completionRate / 100f).toInt().coerceIn(0, 100)
 
         tvFinalScoreTitle.text = "运动结束"
-        tvFinalScore.text = finalScore.toString()
-        tvFinalAverageScore.text = averageScore.toString()
-        tvFinalCompletionRate.text = "$completionRate%"
+        if (playbackMode == PlaybackMode.VIDEO_ONLY) {
+            // 纯视频模式没有动作评分数据。
+            tvFinalScore.text = "—"
+            tvFinalAverageScore.text = "—"
+            tvFinalCompletionRate.text = "—"
+        } else {
+            tvFinalScore.text = finalScore.toString()
+            tvFinalAverageScore.text = averageScore.toString()
+            tvFinalCompletionRate.text = "$completionRate%"
+        }
+
+        //最后一节课程只能返回上一节；其余课程统一进入下一节。
+        btnFinalAdjacent.text = if (currentWorkoutIndex == workoutItems.lastIndex) "上一个" else "下一个"
+        btnFinalAdjacent.isEnabled = workoutItems.size > 1
 
         finalScoreOverlay.alpha = 0f
         finalScoreOverlay.scaleX = 0.85f
@@ -708,6 +797,20 @@ class MainActivity : AppCompatActivity() {
         finalScoreOverlay.visibility = View.VISIBLE
 
         finalScoreOverlay.animate().alpha(1f).scaleX(1f).scaleY(1f).setDuration(300L).start()
+        btnFinalAdjacent.requestFocus()
+    }
+
+    //从完成页进入相邻课程：除最后一节进入下一节，最后一节返回上一节。
+    private fun startAdjacentWorkoutFromCompletion() {
+        if (!isWorkoutCompleted || workoutItems.size <= 1) { return }
+
+        val offset = if (currentWorkoutIndex == workoutItems.lastIndex) -1 else 1
+        val targetIndex = currentWorkoutIndex + offset
+        if (targetIndex !in workoutItems.indices) { return }
+
+        //复用播放中的课程切换流程；先解除完成标记，保留当前纯视频/火柴人模式。
+        isWorkoutCompleted = false
+        switchWorkoutDuringPlayback(offset)
     }
 
     //更新视频预览
@@ -751,6 +854,55 @@ class MainActivity : AppCompatActivity() {
             currentWorkoutIndex = 0
         }
         updateWorkoutPreview()
+    }
+
+    //播放过程中切换到相邻课程；到达列表边界后不循环切换。
+    private fun switchWorkoutDuringPlayback(offset: Int) {
+        if (businessState != BusinessState.PLAYING
+            || overlayState != OverlayState.NONE
+            || isWorkoutCompleted
+            || workoutItems.isEmpty()
+        ) { return }
+
+        val targetIndex = currentWorkoutIndex + offset
+        if (targetIndex !in workoutItems.indices) { return }
+
+        //记住切换前是否正在使用火柴人。切换课程时保留现有手机连接和动作检测结果。
+        val keepPoseMode = playbackMode == PlaybackMode.VIDEO_WITH_POSE && isPhoneConnected
+
+        practicePlayer?.pause()
+        stopPreparationCountdown()
+        stopPlaybackProgressUpdating()
+        stopScoreChecking()
+        hideScorePanel()
+
+        //只停止旧课程的Pose上传，不断开WebSocket，也不让手机退出动作检测。
+        if (keepPoseMode) {
+            poseWebSocketServer?.sendPracticeStop()
+        }
+
+        skeletonView.clearPose()
+        skeletonContainer.visibility = View.GONE
+
+        currentWorkoutIndex = targetIndex
+        val workout = workoutItems[currentWorkoutIndex]
+        selectedWorkoutId = workout.workoutId
+        hasWorkoutStarted = false
+        isWorkoutCompleted = false
+
+        initializeScoring(workout.workoutId)
+        prepareWorkoutVideo(workout.videoResId)
+
+        if (keepPoseMode) {
+            //向已连接手机切换workoutId，然后直接从倒计时开始，不再扫码或动作检测。
+            startVideoWithPose()
+        } else {
+            //纯视频切换后仍保持纯视频模式，不重新弹出二维码。
+            playbackMode = PlaybackMode.VIDEO_ONLY
+            overlayState = OverlayState.NONE
+            refreshScanButton()
+            startPreparationCountdown()
+        }
     }
 
     //视频选择页面
@@ -834,7 +986,7 @@ class MainActivity : AppCompatActivity() {
     override fun dispatchKeyEvent(
         event: KeyEvent
     ): Boolean {
-        if (event.action == KeyEvent.ACTION_DOWN) {
+        if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0) {
             when (event.keyCode) {
                 // HOME按↑： 进入边看边练主界面= VIDEO_SELECTION
                 KeyEvent.KEYCODE_DPAD_UP -> {
@@ -846,21 +998,40 @@ class MainActivity : AppCompatActivity() {
                 }
 
                 KeyEvent.KEYCODE_DPAD_LEFT -> {
-                    if (businessState == BusinessState.VIDEO_SELECTION
-                    ) {
-                        showPreviousWorkout()
-                        return true
+                    when (businessState) {
+                        BusinessState.VIDEO_SELECTION -> {
+                            showPreviousWorkout()
+                            return true
+                        }
+                        BusinessState.PLAYING -> {
+                            //只有正常播放页面才拦截左右键；弹窗显示时交给系统切换按钮焦点。
+                            if (overlayState == OverlayState.NONE && !isWorkoutCompleted) {
+                                switchWorkoutDuringPlayback(offset = -1)
+                                //边界位置也消费按键，避免播放器按钮焦点被移动。
+                                return true
+                            }
+                        }
+                        else -> Unit
                     }
                 }
 
                 KeyEvent.KEYCODE_DPAD_RIGHT -> {
-                    if (businessState == BusinessState.VIDEO_SELECTION
-                    ) {
-                        showNextWorkout()
-                        return true
+                    when (businessState) {
+                        BusinessState.VIDEO_SELECTION -> {
+                            showNextWorkout()
+                            return true
+                        }
+                        BusinessState.PLAYING -> {
+                            //只有正常播放页面才拦截左右键；弹窗显示时交给系统切换按钮焦点。
+                            if (overlayState == OverlayState.NONE && !isWorkoutCompleted) {
+                                switchWorkoutDuringPlayback(offset = 1)
+                                //边界位置也消费按键，避免播放器按钮焦点被移动。
+                                return true
+                            }
+                        }
+                        else -> Unit
                     }
                 }
-
             }
         }
         return super.dispatchKeyEvent(event)
@@ -887,6 +1058,12 @@ class MainActivity : AppCompatActivity() {
             return
         }
         if (businessState == BusinessState.PLAYING) {
+            //训练已完成时直接返回课程选择页：只停止本课程的Pose上传，保留手机WebSocket连接，
+            //下一门课程可直接复用连接，不再扫码和重复准备动作检测。
+            if (isWorkoutCompleted) {
+                stopCurrentWorkoutKeepConnection()
+                return
+            }
             //视频+动作检测状态下，第一次返回只退出检测，电视继续纯视频。
             if (playbackMode == PlaybackMode.VIDEO_WITH_POSE && isPhoneConnected) {
                 exitPoseDetectionToVideoOnly()
@@ -1045,6 +1222,7 @@ class MainActivity : AppCompatActivity() {
         poseWebSocketServer?.sendExitDetection()
         poseWebSocketServer?.disconnectActiveClient("OTT exited ready check")
         isPhoneConnected = false
+        skeletonView.resetBodySizeCalibration()
         playbackMode = PlaybackMode.VIDEO_ONLY
         skeletonContainer.visibility = View.GONE
         skeletonView.clearPose()
@@ -1059,6 +1237,7 @@ class MainActivity : AppCompatActivity() {
         poseWebSocketServer?.sendExitDetection()
         poseWebSocketServer?.disconnectActiveClient("OTT exited pose detection")
         isPhoneConnected = false
+        skeletonView.resetBodySizeCalibration()
         isWaitingReadyCheck = false
         playbackMode = PlaybackMode.VIDEO_ONLY
         overlayState = OverlayState.NONE
@@ -1170,6 +1349,7 @@ class MainActivity : AppCompatActivity() {
                             if (businessState == BusinessState.PLAYING && overlayState == OverlayState.PAIRING_QR
                             ) {
                                 isPhoneConnected = true
+                                skeletonView.resetBodySizeCalibration()
                                 Log.i("Pairing", "Pairing accepted, start VIDEO_WITH_POSE")
                                 showReadyCheckPage()
                             } else {
@@ -1266,10 +1446,15 @@ class MainActivity : AppCompatActivity() {
         if (businessState != BusinessState.PLAYING
             || playbackMode != PlaybackMode.VIDEO_WITH_POSE
             || !isPhoneConnected
-            || !hasWorkoutStarted
-            || isPreparingWorkout
             || isWorkoutCompleted
         ) { return }
+
+        //倒计时期间不绘制火柴人，只收集完整人体帧用于本次连接的大小标定。
+        if (isPreparingWorkout) {
+            skeletonView.observeBodySizeCalibrationFrame(frame)
+            return
+        }
+        if (!hasWorkoutStarted) { return }
 
         if (frame.persons.isEmpty()) {
             skeletonView.clearPose()
@@ -1322,6 +1507,7 @@ class MainActivity : AppCompatActivity() {
 
         // 手机已经不存在，所以先切纯视频语义
         playbackMode = PlaybackMode.VIDEO_ONLY
+        skeletonView.resetBodySizeCalibration()
         overlayState = OverlayState.PHONE_DISCONNECTED
         // 清火柴人
         skeletonView.clearPose()
@@ -1401,6 +1587,7 @@ class MainActivity : AppCompatActivity() {
         practicePlayer?.seekTo(0)
         clearScoring()
         skeletonView.clearPose()
+        skeletonView.resetBodySizeCalibration()
         businessState = BusinessState.HOME
         playbackMode = PlaybackMode.NONE
         overlayState = OverlayState.NONE

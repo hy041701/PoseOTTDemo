@@ -11,8 +11,11 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
 import android.view.KeyEvent
+import android.view.Gravity
 import android.view.View
+import android.view.ViewGroup
 import android.widget.FrameLayout
+import android.widget.LinearLayout
 import android.widget.ImageView
 import android.widget.TextView
 import com.example.poseottdemo.pairing.QrCodeGenerator
@@ -42,6 +45,17 @@ import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
 
 class MainActivity : AppCompatActivity() {
+    private enum class MainVideoDisplayMode {
+        CARD,
+        FULLSCREEN,
+        SPLIT
+    }
+
+    private lateinit var mainVideoPlayerView: PlayerView
+    private lateinit var mainVideoCoverView: ImageView
+    private lateinit var leftContentContainer: FrameLayout
+    private var mainVideoPlayer: ExoPlayer? = null
+    private var mainVideoDisplayMode = MainVideoDisplayMode.CARD
     private var poseWebSocketServer: PoseWebSocketServer? = null
     private lateinit var skeletonView: SkeletonView
     private lateinit var practicePanel: FrameLayout
@@ -198,6 +212,9 @@ class MainActivity : AppCompatActivity() {
         )
 
         practicePanel = findViewById(R.id.practicePanel)
+        leftContentContainer = findViewById(R.id.leftContentContainer)
+        mainVideoPlayerView = findViewById(R.id.mainVideoPlayerView)
+        mainVideoCoverView = findViewById(R.id.mainVideoCoverView)
         qrImageView = findViewById(R.id.qrImageView)
         pairingStatusText = findViewById(R.id.pairingStatusText)
         videoSelectionPanel = findViewById(R.id.videoSelectionPanel)
@@ -248,6 +265,9 @@ class MainActivity : AppCompatActivity() {
         //获取activity_main.xml里的SkeletonView
         skeletonView = findViewById(R.id.skeletonView)//去已经加载好的activity_main.xml里，找到id为skeletonView的那个View
 
+        //主视频与右侧训练视频使用两个独立播放器，任何一边结束都不影响另一边。
+        initMainVideoPlayer()
+
         // 初始化正式训练播放器
         initPracticePlayer()
 
@@ -263,9 +283,13 @@ class MainActivity : AppCompatActivity() {
         btnCancelExitWorkout.setOnClickListener { cancelExitWorkout() }
         btnFinalBack.setOnClickListener { stopCurrentWorkoutKeepConnection() }
         btnFinalAdjacent.setOnClickListener { startAdjacentWorkoutFromCompletion() }
+        mainVideoCoverView.setOnClickListener { showMainVideoFullscreen() }
 
         //Activity一启动，服务器就启动
         startPoseServer()
+
+        //应用启动只显示主视频的小封面，并把遥控器焦点放到封面上。
+        showMainVideoCard()
 
         //适配系统窗口区域
         ViewCompat.setOnApplyWindowInsetsListener(
@@ -722,6 +746,100 @@ class MainActivity : AppCompatActivity() {
         workoutPreviewPlayerView.useController = false
     }
 
+    private fun initMainVideoPlayer() {
+        if (mainVideoPlayer != null) return
+        mainVideoPlayer = ExoPlayer.Builder(this).build().also { player ->
+            mainVideoPlayerView.player = player
+            mainVideoPlayerView.useController = false
+            //整个应用始终只播放主视频声音。
+            player.volume = 1f
+            player.repeatMode = Player.REPEAT_MODE_OFF
+            player.setMediaItem(
+                MediaItem.fromUri("android.resource://$packageName/${R.raw.main_video}")
+            )
+            player.prepare()
+            //准备首帧作为封面，不自动播放。
+            player.playWhenReady = false
+        }
+    }
+
+    private fun showMainVideoCard() {
+        mainVideoDisplayMode = MainVideoDisplayMode.CARD
+        businessState = BusinessState.HOME
+        practicePanel.visibility = View.GONE
+        setLeftContainerSplitMode(enabled = false)
+        mainVideoPlayer?.pause()
+        mainVideoPlayerView.visibility = View.GONE
+        mainVideoCoverView.visibility = View.VISIBLE
+
+        val params = mainVideoCoverView.layoutParams as FrameLayout.LayoutParams
+        params.width = dpToPx(420)
+        params.height = dpToPx(236)
+        params.gravity = Gravity.START or Gravity.CENTER_VERTICAL
+        params.marginStart = dpToPx(72)
+        params.topMargin = 0
+        params.marginEnd = 0
+        params.bottomMargin = 0
+        mainVideoCoverView.layoutParams = params
+        mainVideoCoverView.requestFocus()
+    }
+
+    private fun showMainVideoFullscreen() {
+        mainVideoDisplayMode = MainVideoDisplayMode.FULLSCREEN
+        businessState = BusinessState.HOME
+        practicePanel.visibility = View.GONE
+        setLeftContainerSplitMode(enabled = false)
+        mainVideoCoverView.visibility = View.GONE
+        mainVideoPlayerView.visibility = View.VISIBLE
+
+        val params = mainVideoPlayerView.layoutParams as FrameLayout.LayoutParams
+        params.width = ViewGroup.LayoutParams.MATCH_PARENT
+        params.height = ViewGroup.LayoutParams.MATCH_PARENT
+        params.gravity = Gravity.CENTER
+        params.setMargins(0, 0, 0, 0)
+        mainVideoPlayerView.layoutParams = params
+        mainVideoPlayerView.clearFocus()
+
+        //播放结束后再次从封面进入时从头播放；普通分屏返回则保留原进度。
+        if (mainVideoPlayer?.playbackState == Player.STATE_ENDED) {
+            mainVideoPlayer?.seekTo(0)
+        }
+        mainVideoPlayer?.play()
+    }
+
+    private fun showSplitPractice() {
+        if (mainVideoDisplayMode != MainVideoDisplayMode.FULLSCREEN) return
+        mainVideoDisplayMode = MainVideoDisplayMode.SPLIT
+        setLeftContainerSplitMode(enabled = true)
+        mainVideoCoverView.visibility = View.GONE
+        mainVideoPlayerView.visibility = View.VISIBLE
+
+        val params = mainVideoPlayerView.layoutParams as FrameLayout.LayoutParams
+        params.width = ViewGroup.LayoutParams.MATCH_PARENT
+        params.height = ViewGroup.LayoutParams.MATCH_PARENT
+        params.gravity = Gravity.CENTER
+        params.setMargins(0, 0, 0, 0)
+        mainVideoPlayerView.layoutParams = params
+
+        //现有课程选择、扫码、动作检测、倒计时、评分流程全部保留在右侧40%。
+        showVideoSelectionState()
+    }
+
+    /** 全屏/封面时左侧真正占满屏幕；分屏时恢复主视频60%、训练区40%。 */
+    private fun setLeftContainerSplitMode(enabled: Boolean) {
+        val params = leftContentContainer.layoutParams as LinearLayout.LayoutParams
+        if (enabled) {
+            params.width = 0
+            params.weight = 3f
+        } else {
+            params.width = ViewGroup.LayoutParams.MATCH_PARENT
+            params.weight = 0f
+        }
+        leftContentContainer.layoutParams = params
+    }
+
+    private fun dpToPx(dp: Int): Int = (dp * resources.displayMetrics.density).toInt()
+
     //视频播放器初始化
     private fun initPracticePlayer() {
         // 已经创建过就不要重复创建
@@ -730,6 +848,8 @@ class MainActivity : AppCompatActivity() {
 
         // 把播放器核心和XML里的PlayerView绑定
         practicePlayerView.player = practicePlayer
+        //边看边练课程只显示画面，避免与主视频声音重叠。
+        practicePlayer?.volume = 0f
         //关闭默认的暂停、快进、快退和默认进度条。
         practicePlayerView.useController = false
 
@@ -911,6 +1031,8 @@ class MainActivity : AppCompatActivity() {
         playbackMode = PlaybackMode.NONE
         overlayState = OverlayState.NONE
         practicePanel.visibility = View.VISIBLE
+        workoutPreviewPlayerView.player = workoutPreviewPlayer
+        workoutPreviewPlayerView.visibility = View.VISIBLE
         videoSelectionPanel.visibility = View.VISIBLE
         playingPanel.visibility = View.GONE
         pairingOverlay.visibility = View.GONE
@@ -937,6 +1059,8 @@ class MainActivity : AppCompatActivity() {
         // 进入播放页面
         businessState = BusinessState.PLAYING
         practicePanel.visibility = View.VISIBLE
+        practicePlayerView.player = practicePlayer
+        practicePlayerView.visibility = View.VISIBLE
         videoSelectionPanel.visibility = View.GONE
         playingPanel.visibility = View.VISIBLE
         // 先加载视频，但不要播放
@@ -990,9 +1114,10 @@ class MainActivity : AppCompatActivity() {
             when (event.keyCode) {
                 // HOME按↑： 进入边看边练主界面= VIDEO_SELECTION
                 KeyEvent.KEYCODE_DPAD_UP -> {
-                    if (businessState == BusinessState.HOME
+                    if (businessState == BusinessState.HOME &&
+                        mainVideoDisplayMode == MainVideoDisplayMode.FULLSCREEN
                     ) {
-                        showVideoSelectionState()
+                        showSplitPractice()
                         return true
                     }
                 }
@@ -1038,6 +1163,16 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun handleBackPressed() {
+        if (mainVideoDisplayMode == MainVideoDisplayMode.FULLSCREEN) {
+            showMainVideoCard()
+            return
+        }
+
+        if (mainVideoDisplayMode == MainVideoDisplayMode.CARD) {
+            finish()
+            return
+        }
+
         //退出确认弹窗显示时，返回键等同于取消退出。
         if (overlayState == OverlayState.EXIT_CONFIRMATION) {
             cancelExitWorkout()
@@ -1076,9 +1211,10 @@ class MainActivity : AppCompatActivity() {
             }
             return
         }
-        //视频选择页返回主页，并断开手机。
+        //只有视频选择页按返回才退出边看边练，并恢复主视频全屏。
         if (businessState == BusinessState.VIDEO_SELECTION) {
             exitPracticeBusiness()
+            showMainVideoFullscreen()
             return
         }
 
@@ -1581,10 +1717,20 @@ class MainActivity : AppCompatActivity() {
     private fun exitPracticeBusiness() {
         if (isPhoneConnected) {
             poseWebSocketServer?.sendPracticeStop()
+            //电视主动退出整个边看边练区域时，让手机同步回到扫码页。
+            poseWebSocketServer?.sendExitDetection()
         }
         practicePlayer?.pause()
         workoutPreviewPlayer?.pause()
+        //SurfaceView即使父容器隐藏也可能短暂留下最后一帧，退出时主动解绑。
+        practicePlayerView.visibility = View.GONE
+        practicePlayerView.player = null
+        workoutPreviewPlayerView.visibility = View.GONE
+        workoutPreviewPlayerView.player = null
         practicePlayer?.seekTo(0)
+        stopPreparationCountdown()
+        stopPlaybackProgressUpdating()
+        isWaitingReadyCheck = false
         clearScoring()
         skeletonView.clearPose()
         skeletonView.resetBodySizeCalibration()
@@ -1597,6 +1743,11 @@ class MainActivity : AppCompatActivity() {
         videoSelectionPanel.visibility = View.GONE
         playingPanel.visibility = View.GONE
         pairingOverlay.visibility = View.GONE
+        readyCheckOverlay.visibility = View.GONE
+        preparationOverlay.visibility = View.GONE
+        finalScoreOverlay.visibility = View.GONE
+        scorePanel.visibility = View.GONE
+        playbackProgressPanel.visibility = View.GONE
         disconnectedOverlay.visibility = View.GONE
         exitConfirmationOverlay.visibility = View.GONE
         btnScanPhone.visibility = View.GONE
@@ -1624,6 +1775,11 @@ class MainActivity : AppCompatActivity() {
         workoutPreviewPlayer?.release()
         workoutPreviewPlayer = null
         workoutPreviewPlayerView.player = null
+
+        //释放独立主视频播放器。
+        mainVideoPlayer?.release()
+        mainVideoPlayer = null
+        mainVideoPlayerView.player = null
 
         //关闭WebSocket Server
         try { poseWebSocketServer?.stop() }

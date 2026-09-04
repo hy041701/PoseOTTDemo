@@ -19,9 +19,10 @@ local.properties
 # Generated files
 captures/
 
-# Private workout media and scoring assets
-app/src/main/res/raw/workout_*.mp4
+# Private videos, cover images and scoring assets
+app/src/main/res/raw/
 app/src/main/assets/workout_*/
+app/src/main/assets/**/config.txt
 
 # Operating systems
 .DS_Store

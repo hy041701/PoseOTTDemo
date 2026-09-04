@@ -37,7 +37,6 @@ class SkeletonView @JvmOverloads constructor(
         private const val MAX_CALIBRATION_SCALE = 1.8f
         //MediaPipe中z越小越靠近摄像头；超过该差值才切换前后层，避免轮廓闪烁。
         private const val DEPTH_LAYER_THRESHOLD = 0.035f
-        //项目内的曲线调节系数，并非标准软度指标：1为之前效果，略减小使过渡更紧凑。
         //仅调节肘膝切线长度及肩胯连接控制柄，不改变采样精度、半径或描边。
         private const val CURVE_SOFTNESS = 0.85f
 
@@ -114,18 +113,19 @@ class SkeletonView @JvmOverloads constructor(
     private val bodyWithoutLimbPath = Path()
     private val rootProtectionPath = Path()
 
-    //灰蓝到灰紫的半透明渐变：深度介于原版和浅色版之间。
+    //灰蓝到灰紫的半透明渐变
     private val backgroundStartColor = Color.argb(85, 149, 202, 208)
 
     private val backgroundEndColor = Color.argb(75, 169, 154, 209)
 
-    //光圈中心与人体显示区域底端共用同一位置，避免显示区域停在光圈上缘。
+    //光圈中心与人体显示区域底端共用同一位置。
     private val platformCenterBottomInset = 17f * resources.displayMetrics.density
 
     private val stickLandmarkIds = intArrayOf(11, 12, 13, 14, 15, 16, 23, 24, 25, 26, 27, 28, 0)
 
     //在135 × 240参考尺寸下，13个关节各自的圆半径。
-    private val baseJointRadii = floatArrayOf(6.1f, 6.1f, 4.2f, 4.2f, 4.0f, 4.0f, 6.2f, 6.2f, 5.2f, 5.2f, 4.5f, 4.5f, 11.3f)
+//    private val baseJointRadii = floatArrayOf(6.1f, 6.1f, 4.2f, 4.2f, 4.0f, 4.0f, 6.2f, 6.2f, 5.2f, 5.2f, 4.5f, 4.5f, 11.3f)
+    private val baseJointRadii = floatArrayOf(5.0f, 5.0f, 4.5f, 4.5f, 4.2f, 4.2f, 6.0f, 6.0f, 5.5f, 5.5f, 4.8f, 4.8f, 11.2f)
 
     //固定的火柴人整体缩放比例
     private val fixedStickScale = 1.0f
@@ -216,7 +216,7 @@ class SkeletonView @JvmOverloads constructor(
         Log.i(TAG, "Body size calibration timed out; use original mapping")
     }
 
-    //断开手机或重新扫码时才清除本次连接的标定结果。
+    //断开手机或重新扫码时才清除本次连接的基准大小结果。
     fun resetBodySizeCalibration() {
         isCalibratingBodySize = false
         isBodySizeCalibrationCompleted = false
@@ -300,7 +300,7 @@ class SkeletonView @JvmOverloads constructor(
         }
     }
 
-    //每两秒输出一次SkeletonView绘制性能，统一使用POSE_PERF标签。
+    //每两秒输出一次SkeletonView绘制性能，统一使用POSE_PERF标签，用于测试帧率
     private fun recordPoseDrawPerformance(drawDurationNs: Long) {
         posePerfDrawCount++
         posePerfDrawTotalNs += drawDurationNs
@@ -342,7 +342,7 @@ class SkeletonView @JvmOverloads constructor(
         )
     }
 
-    //使用阴影、渐变填充、后沿高光和前沿暗边叠加出扁椭圆底盘的3D感。
+    //扁椭圆底盘的凸显3D感
     private fun drawPlatformRing(canvas: Canvas) {
         if (width <= 0 || height <= 0) { return }
 
@@ -373,10 +373,8 @@ class SkeletonView @JvmOverloads constructor(
 
         //上浅下深的半透明填充表现盘面和厚度。
         platformFillPaint.shader = LinearGradient(
-            0f,
-            oval.top,
-            0f,
-            oval.bottom,
+            0f, oval.top,
+            0f, oval.bottom,
             Color.argb(105, 213, 242, 247),
             Color.argb(82, 91, 71, 132),
             Shader.TileMode.CLAMP
@@ -574,7 +572,7 @@ class SkeletonView @JvmOverloads constructor(
             headPath.addCircle(head.x, head.y, head.radius, Path.Direction.CW)
             torso.op(headPath, Path.Op.UNION)
         }
-        //并集只消除内部边界，不会消除交点的尖角；最后统一重建连续外轮廓。
+        //并集消除内部边界。
         if (foregroundDepth == null) {
             val radius = joints.filter { it.isReliable() }.map { it.radius }.minOrNull() ?: 1f
             smoothClosedContours(torso, target, (radius*0.85f).coerceAtLeast(1f))
@@ -700,11 +698,17 @@ class SkeletonView @JvmOverloads constructor(
             val root = roots[i]
             val limb = Path()
             buildBodyLimbPath(limb, joints, root)
-            val limbCheckpoint = canvas.save()
-            canvas.clipPath(limb)
+            //评分模式保留固定半径关节圆：大臂/大腿先填色，再用肩/髋圆形成规则根部边界。
             drawPathFill(canvas, limb, feedbackColor(rootParts[i]))
+            val rootJoint = joints[root]
+            if (rootJoint.isReliable()) {
+                val originalColor = bodyPaint.color
+                bodyPaint.color = feedbackColor(rootParts[i])
+                canvas.drawCircle(rootJoint.x, rootJoint.y, rootJoint.radius, bodyPaint)
+                bodyPaint.color = originalColor
+            }
+            //小臂/小腿后绘制，肘/膝端同样使用确定半径的圆作为颜色分界。
             drawFeedbackSegment(canvas, joints[root+2], joints[root+4], feedbackColor(endParts[i]))
-            canvas.restoreToCount(limbCheckpoint)
         }
         val head = joints[12]
         if (head.isReliable()) {
@@ -853,31 +857,52 @@ class SkeletonView @JvmOverloads constructor(
             val elbow = joints[root + 2]
             val wrist = joints[root + 4]
             if (!elbow.isReliable() || !wrist.isReliable()) { continue }
-            val shoulder = if (joints[root].isReliable()) joints[root] else elbow.copy(
-                x = elbow.x - (wrist.x - elbow.x), y = elbow.y - (wrist.y - elbow.y)
-            )
-            //开放边框：两侧及腕端半圆，不闭合肘端，也不画腕部完整圆圈。
-            buildLimbPath(foregroundLimbPath, shoulder, elbow, wrist, forearmOnly = true)
+            //最上层只补小臂两侧和腕端半圆；肘端保持开放，避免出现内部横向接缝。
+            buildOpenForearmOutline(foregroundLimbPath, elbow, wrist)
             canvas.drawPath(foregroundLimbPath, bodyOutlinePaint)
         }
     }
 
-    //腿根不补圆帽，沿身体方向伸入躯干少量距离，避免取消圆帽后产生缝隙。
+    private fun buildOpenForearmOutline(target: Path, elbow: DrawJoint, wrist: DrawJoint) {
+        target.reset()
+        val dx = wrist.x - elbow.x
+        val dy = wrist.y - elbow.y
+        val length = hypot(dx, dy)
+        if (length < 0.01f) { return }
+        val ux = dx / length
+        val uy = dy / length
+        val nx = -uy
+        val ny = ux
+        val elbowLeftX = elbow.x + nx * elbow.radius
+        val elbowLeftY = elbow.y + ny * elbow.radius
+        val elbowRightX = elbow.x - nx * elbow.radius
+        val elbowRightY = elbow.y - ny * elbow.radius
+        val wristLeftX = wrist.x + nx * wrist.radius
+        val wristLeftY = wrist.y + ny * wrist.radius
+        val wristRightX = wrist.x - nx * wrist.radius
+        val wristRightY = wrist.y - ny * wrist.radius
+        val tipX = wrist.x + ux * wrist.radius
+        val tipY = wrist.y + uy * wrist.radius
+        val k = wrist.radius * 0.5522848f
+
+        target.moveTo(elbowLeftX, elbowLeftY)
+        target.lineTo(wristLeftX, wristLeftY)
+        target.cubicTo(
+            wristLeftX + ux * k, wristLeftY + uy * k,
+            tipX + nx * k, tipY + ny * k,
+            tipX, tipY
+        )
+        target.cubicTo(
+            tipX - nx * k, tipY - ny * k,
+            wristRightX + ux * k, wristRightY + uy * k,
+            wristRightX, wristRightY
+        )
+        target.lineTo(elbowRightX, elbowRightY)
+    }
+
+    //四肢使用固定半径关节圆与直边梯形；与躯干的自然融合仍由整体并集处理。
     private fun buildBodyLimbPath(target: Path, joints: List<DrawJoint>, rootIndex: Int) {
-        var root = joints[rootIndex]
-        val isLeg = rootIndex == 6 || rootIndex == 7
-        if (isLeg && root.isReliable()) {
-            val shoulder = joints[rootIndex - 6]
-            if (shoulder.isReliable()) {
-                val dx = shoulder.x-root.x
-                val dy = shoulder.y-root.y
-                val distance = hypot(dx,dy).coerceAtLeast(0.01f)
-                val inset = minOf(root.radius*0.45f, distance*0.1f)
-                root = root.copy(x = root.x+dx/distance*inset, y = root.y+dy/distance*inset)
-            }
-        }
-        //肩根和腿根都不补圆帽，外形交给专门的连接曲线。
-        buildLimbPath(target, root, joints[rootIndex+2], joints[rootIndex+4], roundRoot = false)
+        buildLimbPath(target, joints[rootIndex], joints[rootIndex+2], joints[rootIndex+4])
     }
 
     private fun buildLimbPath(
@@ -890,70 +915,32 @@ class SkeletonView @JvmOverloads constructor(
     ) {
         target.reset()
         if (!root.isReliable() || !middle.isReliable() || !end.isReliable()) { return }
-        val dx1 = middle.x - root.x
-        val dy1 = middle.y - root.y
-        val dx2 = end.x - middle.x
-        val dy2 = end.y - middle.y
-        val length1 = hypot(dx1, dy1).coerceAtLeast(0.01f)
-        val length2 = hypot(dx2, dy2).coerceAtLeast(0.01f)
-        var tx = dx1 / length1 + dx2 / length2
-        var ty = dy1 / length1 + dy2 / length2
-        //完全折叠时平均方向接近零，保留入射方向以免中心轮廓塌缩。
-        if (hypot(tx,ty) < 0.01f) { tx = dx1/length1; ty = dy1/length1 }
-        val tangentLength = hypot(tx, ty).coerceAtLeast(0.01f)
-        val bendLength = minOf(length1, length2) * 0.65f * CURVE_SOFTNESS
-        val midTx = tx / tangentLength * bendLength
-        val midTy = ty / tangentLength * bendLength
-        val left = ArrayList<Pair<Float, Float>>(25)
-        val right = ArrayList<Pair<Float, Float>>(25)
-        //整条肢体共享肘/膝切线，不再在关节上叠圆；宽度平滑地由粗变细。
-        for (segment in (if (forearmOnly) 1 else 0)..1) {
-            val a = if (segment == 0) root else middle
-            val b = if (segment == 0) middle else end
-            val ax = if (segment == 0) dx1 else midTx
-            val ay = if (segment == 0) dy1 else midTy
-            val bx = if (segment == 0) midTx else dx2
-            val by = if (segment == 0) midTy else dy2
-            for (step in (if (segment == 0 || forearmOnly) 0 else 1)..12) {
-                val t = step / 12f
-                val t2 = t * t
-                val t3 = t2 * t
-                val x = (2*t3-3*t2+1)*a.x + (t3-2*t2+t)*ax + (-2*t3+3*t2)*b.x + (t3-t2)*bx
-                val y = (2*t3-3*t2+1)*a.y + (t3-2*t2+t)*ay + (-2*t3+3*t2)*b.y + (t3-t2)*by
-                val vx = (6*t2-6*t)*a.x + (3*t2-4*t+1)*ax + (-6*t2+6*t)*b.x + (3*t2-2*t)*bx
-                val vy = (6*t2-6*t)*a.y + (3*t2-4*t+1)*ay + (-6*t2+6*t)*b.y + (3*t2-2*t)*by
-                val len = hypot(vx, vy).coerceAtLeast(0.01f)
-                val radius = a.radius + (b.radius-a.radius)*(3*t2-2*t3)
-                left.add((x-vy/len*radius) to (y+vx/len*radius))
-                right.add((x+vy/len*radius) to (y-vx/len*radius))
-            }
-        }
-        target.moveTo(left.first().first, left.first().second)
-        left.drop(1).forEach { target.lineTo(it.first, it.second) }
         if (forearmOnly) {
-            //两个四分之一圆组成腕端半圆，两侧在肘端开放，不产生内部封口线。
-            val ux = dx2/length2
-            val uy = dy2/length2
-            val nx = -uy
-            val ny = ux
-            val r = end.radius
-            val k = r*0.5522848f
-            val tipX = end.x+ux*r
-            val tipY = end.y+uy*r
-            val l = left.last()
-            val q = right.last()
-            target.cubicTo(l.first+ux*k,l.second+uy*k,tipX+nx*k,tipY+ny*k,tipX,tipY)
-            target.cubicTo(tipX-nx*k,tipY-ny*k,q.first+ux*k,q.second+uy*k,q.first,q.second)
-            right.asReversed().drop(1).forEach { target.lineTo(it.first,it.second) }
+            buildOpenForearmOutline(target, middle, end)
             return
         }
-        right.asReversed().forEach { target.lineTo(it.first, it.second) }
-        target.close()
-        //腿根隐藏于躯干，不再增加向外突出的圆帽。
-        for (joint in (if (roundRoot) listOf(root, end) else listOf(end))) {
-            val cap = Path()
-            cap.addCircle(joint.x, joint.y, joint.radius, Path.Direction.CW)
-            target.op(cap, Path.Op.UNION)
+
+        fun unionSegment(start: DrawJoint, finish: DrawJoint) {
+            val dx = finish.x - start.x
+            val dy = finish.y - start.y
+            val length = hypot(dx, dy)
+            if (length < 0.01f) { return }
+            val nx = -dy / length
+            val ny = dx / length
+            val segment = Path().apply {
+                moveTo(start.x + nx*start.radius, start.y + ny*start.radius)
+                lineTo(finish.x + nx*finish.radius, finish.y + ny*finish.radius)
+                lineTo(finish.x - nx*finish.radius, finish.y - ny*finish.radius)
+                lineTo(start.x - nx*start.radius, start.y - ny*start.radius)
+                close()
+            }
+            if (target.isEmpty) target.set(segment) else target.op(segment, Path.Op.UNION)
+        }
+        unionSegment(root, middle)
+        unionSegment(middle, end)
+        for (joint in listOf(root, middle, end)) {
+            val circle = Path().apply { addCircle(joint.x, joint.y, joint.radius, Path.Direction.CW) }
+            if (target.isEmpty) target.set(circle) else target.op(circle, Path.Op.UNION)
         }
     }
 
@@ -1099,30 +1086,11 @@ class SkeletonView @JvmOverloads constructor(
         val endLeftX = end.x + normalX * end.radius
         val endLeftY = end.y + normalY * end.radius
 
-        //两侧轻微向外弯曲，向外12%的幅度。
-        val curveAmount = minOf(start.radius, end.radius) * 0.12f
-        val firstControlRatio = 0.34f
-        val secondControlRatio = 0.68f
-
         bodyPartPath.reset()
         bodyPartPath.moveTo(startLeftX, startLeftY)
-        bodyPartPath.cubicTo(
-            startLeftX + directionX * firstControlRatio + normalX * curveAmount,
-            startLeftY + directionY * firstControlRatio + normalY * curveAmount,
-            startLeftX + directionX * secondControlRatio + normalX * (end.radius - start.radius) * secondControlRatio + normalX * curveAmount,
-            startLeftY + directionY * secondControlRatio + normalY * (end.radius - start.radius) * secondControlRatio + normalY * curveAmount,
-            endLeftX,
-            endLeftY
-        )
+        bodyPartPath.lineTo(endLeftX, endLeftY)
         bodyPartPath.lineTo(endRightX, endRightY)
-        bodyPartPath.cubicTo(
-            endRightX - directionX * (1f - secondControlRatio) - normalX * curveAmount,
-            endRightY - directionY * (1f - secondControlRatio) - normalY * curveAmount,
-            endRightX - directionX * (1f - firstControlRatio) - normalX * (start.radius - end.radius) * (1f - firstControlRatio) - normalX * curveAmount,
-            endRightY - directionY * (1f - firstControlRatio) - normalY * (start.radius - end.radius) * (1f - firstControlRatio) - normalY * curveAmount,
-            startRightX,
-            startRightY
-        )
+        bodyPartPath.lineTo(startRightX, startRightY)
         bodyPartPath.close()
         unionPathPart(targetPath)
     }
